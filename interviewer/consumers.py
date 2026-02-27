@@ -10,6 +10,7 @@ from django.conf import settings
 from google import genai
 from google.genai import types
 from asgiref.sync import sync_to_async
+from twilio.rest import Client
 
 import audioop
 
@@ -57,7 +58,45 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
 
         if data.get("event") == "start":
             self.stream_sid = data['start']['streamSid']
-            print(f"\n[Trial] Call Started. Stream SID: {self.stream_sid}")
+            self.call_sid = data['start'].get('callSid')
+            session_id = self.scope['url_route']['kwargs']['session_id']
+            
+            print(f"\n[Microservice] Fetching data for session: {session_id}")
+            
+            # 1. Fetch from Redis
+            import redis
+            r = redis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, decode_responses=True)
+            candidate_raw = r.get(f"session:{session_id}")
+            
+            if candidate_raw:
+                cdata = json.loads(candidate_raw)
+                self.candidate_name = cdata.get('candidate_name', 'Candidate')
+                self.job_role = cdata.get('job_role', 'Software Engineer')
+                self.difficulty = cdata.get('difficulty', 'Medium')
+                self.num_questions = cdata.get('num_questions', 2)
+                self.ice_breaker = cdata.get('ice_breaker', None)
+            else:
+                # Fallback if Redis expired or not found
+                self.candidate_name = "Candidate"
+                self.job_role = "Software Engineer"
+                self.difficulty = "Medium"
+                self.num_questions = 2
+                self.ice_breaker = None
+
+            # 2. Sync to PostgreSQL
+            from .models import InterviewSession
+            await sync_to_async(InterviewSession.objects.update_or_create)(
+                session_id=session_id,
+                defaults={
+                    'call_sid': self.call_sid, 
+                    'candidate_name': self.candidate_name,
+                    'job_role': self.job_role,
+                    'difficulty': self.difficulty,
+                    'num_questions': self.num_questions,
+                    'ice_breaker': self.ice_breaker
+                }
+            )
+            
             await self.start_gemini_session()
 
         elif data.get("event") == "media":
@@ -85,17 +124,24 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
     async def start_gemini_session(self):
         # Static Prompt for 2-question Trial
         system_prompt = f"""
-        You are Remi, an expert Technical Interviewer. You are interviewing {self.candidate_name} for a Technical role.
+        You are Ai-Audio Interviewer, an expert Technical Interviewer. You are interviewing {self.candidate_name} for the position of {self.job_role}.
+        
+        CONTEXT:
+        - Job Role: {self.job_role}
+        - Difficulty: {self.difficulty}
+        - Number of Questions: {self.num_questions}
+        - Ice Breaker: {self.ice_breaker if self.ice_breaker else "Briefly introduce yourself and start."}
         
         RULES:
-        - Question Limit: Exactly 2 technical questions.
+        - For Greeting only use candidate's First name not the full name.
+        - Question Limit: Exactly {self.num_questions} technical questions tailored to the {self.job_role} role at {self.difficulty} difficulty.
         - Patience: Wait for 3 seconds of silence before responding.
-        - Tone: Professional and encouraging.
+        - Tone: Professional, encouraging, and highly technical.
         
         PROTOCOL:
-        - Start: "Hello. I'm Remi. This is a 2-question trial interview. To start, can you introduce yourself?"
-        - End: After questions, say: "Thank you for taking this trial interview. Goodbye."
-        - Final Task: Call the `save_report` tool once you have said goodbye.
+        - Start: Greet the candidate. Use the Ice Breaker if provided: "{self.ice_breaker if self.ice_breaker else ''}". Otherwise, ask for an introduction.
+        - End: After exactly {self.num_questions} questions, say: "Thank you for the interview, {self.candidate_name}. Goodbye."
+        - Final Step: ONLY after you have finished speaking the goodbye message, call the `hang_up_call` tool.
         """
 
         # YOUR EXACT SETUP CONFIG
@@ -114,19 +160,11 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
                 "system_instruction": { "parts": [{ "text": system_prompt }] },
                 "tools": [{
                     "function_declarations": [{
-                        "name": "save_report",
-                        "description": "Save interview results.",
+                        "name": "hang_up_call",
+                        "description": "Ends the phone call gracefully after the interview is finished.",
                         "parameters": {
                             "type": "OBJECT",
-                            "properties": {
-                                "technical_score": { "type": "INTEGER" },
-                                "communication_score": { "type": "INTEGER" },
-                                "compatibility": { "type": "STRING", "enum": ["High", "Medium", "Low"] },
-                                "feedback": { "type": "STRING" },
-                                "transcript_summary": { "type": "STRING" },
-                                "full_transcript": { "type": "STRING" }
-                            },
-                            "required": ["technical_score", "communication_score", "feedback", "compatibility", "transcript_summary", "full_transcript"]
+                            "properties": {}
                         }
                     }]
                 }]
@@ -176,18 +214,22 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
                         print(f"Candidate: {text}")
                         self.transcript_history.append(f"User: {text}")
 
-                # Tool Call Handling (Terminal Output)
+                # Tool Call Handling
                 if 'toolCall' in response:
-                    print("\n[Tool Call] save_report triggered by Gemini.")
-                    # In trial, we just print the tool arguments to the terminal
-                    for call in response['toolCall']['functionCalls']:
-                        if call['name'] == 'save_report':
-                            print("\n" + "="*30)
-                            print("FINAL TRIAL REPORT")
-                            print("="*30)
-                            print(json.dumps(call['args'], indent=4))
-                            print("="*30 + "\n")
-                    return
+                    for call in response['toolCall'].get('functionCalls', []):
+                        if call['name'] == 'hang_up_call':
+                            print("\n[Tool Call] hang_up_call triggered. Terminating call...")
+                            if self.call_sid:
+                                try:
+                                    client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+                                    # Terminating the call via REST API
+                                    client.calls(self.call_sid).update(status='completed')
+                                    print(f"[Twilio] Call {self.call_sid} terminated via API.")
+                                except Exception as e:
+                                    print(f"[Twilio Error] Could not hang up: {e}")
+                            
+                            await self.close()
+                            return
 
         except Exception as e:
             print(f"[Google WS Error] {e}")

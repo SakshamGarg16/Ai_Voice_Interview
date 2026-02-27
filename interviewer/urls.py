@@ -5,4 +5,5 @@ from . import views
 urlpatterns = [
     # Change <uuid:session_id> to <str:session_id>
     path('twilio/voice/<str:session_id>/', views.initial_twiml, name='initial_twiml'),
+    path('twilio/recording-callback/<str:session_id>/', views.recording_callback, name='recording_callback'),
 ]
