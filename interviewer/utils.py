@@ -200,6 +200,17 @@ def send_report_to_backend(session_id, recommendation=None):
         print(f"[Report Error] Failed to send report: {e}")
 
 def initiate_ai_interview(target_number, candidate_name, job_role, difficulty="Medium", num_questions=2, ice_breaker=None, requirements=None, mandatory_requirements=None):
+    # Normalize phone number: Default to +91 if no country code provided
+    target_number = target_number.strip().replace(" ", "").replace("-", "")
+    if not target_number.startswith('+'):
+        if len(target_number) == 10:
+            target_number = f"+91{target_number}"
+        elif target_number.startswith('91') and len(target_number) == 12:
+            target_number = f"+{target_number}"
+        else:
+            # For any other case where + is missing, assume +91 as requested
+            target_number = f"+91{target_number}"
+
     account_sid = settings.TWILIO_ACCOUNT_SID
     auth_token = settings.TWILIO_AUTH_TOKEN
     twilio_number = settings.TWILIO_PHONE_NUMBER
