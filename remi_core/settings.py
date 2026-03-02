@@ -39,6 +39,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 DEBUG = True
 
 ALLOWED_HOSTS = ['eeca2e19a816.ngrok-free.app', 'localhost', '127.0.0.1', '*']
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 
 # Application definition

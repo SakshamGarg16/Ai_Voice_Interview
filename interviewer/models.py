@@ -6,6 +6,8 @@ class InterviewSession(models.Model):
     job_role = models.CharField(max_length=255, default="Software Engineer")
     difficulty = models.CharField(max_length=50, default="Medium")
     ice_breaker = models.TextField(blank=True, null=True)
+    requirements = models.TextField(blank=True, null=True)
+    mandatory_requirements = models.JSONField(blank=True, null=True)
     num_questions = models.IntegerField(default=2)
     
     call_sid = models.CharField(max_length=255, blank=True, null=True)

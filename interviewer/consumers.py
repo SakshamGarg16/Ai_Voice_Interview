@@ -45,6 +45,8 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
         self.candidate_name = "Trial Candidate" 
         self.cheating_stats = [] 
         self.baseline_wpm = None
+        self.requirements = ""
+        self.mandatory_requirements = {}
 
     async def disconnect(self, close_code):
         self.is_connected = False
@@ -75,6 +77,8 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
                 self.difficulty = cdata.get('difficulty', 'Medium')
                 self.num_questions = cdata.get('num_questions', 2)
                 self.ice_breaker = cdata.get('ice_breaker', None)
+                self.requirements = cdata.get('requirements', "")
+                self.mandatory_requirements = cdata.get('mandatory_requirements', {})
             else:
                 # Fallback if Redis expired or not found
                 self.candidate_name = "Candidate"
@@ -82,6 +86,8 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
                 self.difficulty = "Medium"
                 self.num_questions = 2
                 self.ice_breaker = None
+                self.requirements = ""
+                self.mandatory_requirements = {}
 
             # 2. Sync to PostgreSQL
             from .models import InterviewSession
@@ -93,7 +99,9 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
                     'job_role': self.job_role,
                     'difficulty': self.difficulty,
                     'num_questions': self.num_questions,
-                    'ice_breaker': self.ice_breaker
+                    'ice_breaker': self.ice_breaker,
+                    'requirements': self.requirements,
+                    'mandatory_requirements': self.mandatory_requirements
                 }
             )
             
@@ -131,10 +139,13 @@ class TelephonyConsumer(AsyncWebsocketConsumer):
         - Difficulty: {self.difficulty}
         - Number of Questions: {self.num_questions}
         - Ice Breaker: {self.ice_breaker if self.ice_breaker else "Briefly introduce yourself and start."}
+        - Job Requirements: {self.requirements}
+        - Mandatory Requirements (Ask specific questions on these): {json.dumps(self.mandatory_requirements)}
         
         RULES:
         - For Greeting only use candidate's First name not the full name.
         - Question Limit: Exactly {self.num_questions} technical questions tailored to the {self.job_role} role at {self.difficulty} difficulty.
+        - IMPORTANT: You MUST evaluate the candidate against the Mandatory Requirements provided. Ask at least one question related to these requirements.
         - Patience: Wait for 3 seconds of silence before responding.
         - Tone: Professional, encouraging, and highly technical.
         
